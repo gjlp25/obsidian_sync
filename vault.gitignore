@@ -1,0 +1,9 @@
+# Copied into the vault's .gitignore by `vaultsync init`.
+# Obsidian's per-device UI state (open panes, last file); changes on every click.
+.obsidian/workspace*
+# Obsidian's local trash folder (Settings > Files & links > Deleted files).
+.trash/
+# OS cruft.
+.DS_Store
+Thumbs.db
+desktop.ini

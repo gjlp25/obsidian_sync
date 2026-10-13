@@ -1,0 +1,18 @@
+{
+  "name": "vaultsync",
+  "version": "1.0.0",
+  "description": "Git-based sync for an Obsidian vault: debounced commit/push, periodic pull --rebase, conflict files instead of data loss.",
+  "type": "module",
+  "bin": {
+    "vaultsync": "bin/vaultsync.js"
+  },
+  "engines": {
+    "node": ">=20.12"
+  },
+  "license": "MIT",
+  "private": true,
+  "dependencies": {
+    "chokidar": "^4.0.3",
+    "simple-git": "^4.0.2"
+  }
+}
