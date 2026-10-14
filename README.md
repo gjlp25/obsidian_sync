@@ -99,7 +99,7 @@ conflicts    1 outstanding:
   Projects/plan.conflict-2026-10-13.md
 ```
 
-Settings in `.env`: `VAULT_PATH`, `GITHUB_TOKEN`, `DEBOUNCE_SECONDS` (default 30),
+Settings in `.env`: `VAULT_PATH` (several vaults separated by `:`, `;` on Windows), `GITHUB_TOKEN`, `DEBOUNCE_SECONDS` (default 30),
 `PULL_INTERVAL_SECONDS` (default 300).
 
 Device-local state lives inside the vault's `.git/` folder and is never committed:
@@ -194,6 +194,47 @@ Restart=on-failure
 WantedBy=default.target
 ```
 
+## Server / NAS (Docker)
+
+Use this when a vault lives on a NAS share that other containers (for example AI agents) read and
+write. The share counts as one more device. One vaultsync container syncs all vaults: list them in
+`VAULT_PATH`, separated by `:`, and mount each one on the same host path the other containers use.
+Those containers just write files. They never run git. Each vault is its own GitHub repo.
+
+- **One writer per `.git`:** never run two vaultsync instances, or git from another container, on
+  the same vault folder. Concurrent git processes race on `index.lock`, and that is worse over NFS.
+- **Watcher over NFS:** writes from containers on the same docker host trigger the watcher. Writes
+  from other NFS/SMB clients (or the NAS itself) don't, but the 5-minute sync still commits them.
+- **Don't open the share directly in desktop Obsidian.** Desktops use their own clone (see
+  [Second machine](#second-machine)). Otherwise two sync mechanisms work on one folder.
+- **Ownership:** set `user:` to the uid:gid that owns the files on the share (`ls -ln` on the docker
+  host). The image already trusts every directory (`safe.directory`), because the owner and the
+  container user differ.
+- **Token:** `GITHUB_TOKEN` comes from the environment (no `.env` in the image). One fine-grained
+  token can cover all vault repos. Commits are authored by the `GIT_AUTHOR_*` values in compose.
+- **One uid for all vaults:** the container runs as one user, so that user must be able to write
+  every vault folder.
+
+Setup. Stop the containers that write to the vaults first, so the first commit is consistent:
+
+```sh
+cp compose.example.yml compose.yml        # set paths, VAULT_PATH and user
+export GITHUB_TOKEN=github_pat_...         # or put it in a .env next to compose.yml
+docker compose build
+docker compose run --rm vaultsync init     # all vaults in VAULT_PATH
+# once per vault:
+docker compose run --rm --entrypoint git vaultsync -C /vaults/Werk remote add origin https://github.com/you/vault-werk.git
+docker compose run --rm vaultsync sync     # first commit + push, all vaults
+docker compose up -d                       # start the watcher, then restart the agent containers
+docker compose exec vaultsync node /app/bin/vaultsync.js status
+```
+
+Log lines are prefixed with the vault folder name, for example `[Werk] pushed main`. To add a vault
+later, append it to `VAULT_PATH` and `volumes`, run `init`, `remote add` and `sync` for it, then
+`docker compose up -d`.
+
+Then switch each desktop to a fresh local clone of the repo.
+
 ## What is synced
 
 Everything in the vault except what `.gitignore` excludes:
@@ -208,25 +249,42 @@ per-device, add it to the vault's `.gitignore`.
 
 ## Mobile
 
-There is no mobile component. Point a git client at the same repo and open its folder as a vault in
-Obsidian.
+vaultsync doesn't run on a phone. The phone is just another clone of the same repo, synced by a git
+client inside or next to Obsidian. The NAS setup doesn't matter to the phone; it only talks to GitHub.
 
-**iOS: [Working Copy](https://workingcopy.app)** (pushing requires the paid unlock)
+### Recommended: the Obsidian Git plugin (iOS and Android)
 
-1. In Obsidian, create an empty vault called `Vault` in *On My iPhone → Obsidian*.
-2. In Working Copy, clone `you/vault`. Sign in to GitHub or use a fine-grained token.
-3. Repository → **Link Repository to Folder** (also called *Setup Synced Directory*), and pick the
-   `Obsidian/Vault` folder.
-4. Routine: **pull** before you start editing, then **commit + push** when you're done. You can
-   automate this with Shortcuts: a "When Obsidian opens" automation runs *Pull*, and a "When Obsidian
-   closes" automation runs *Commit* + *Push*.
+The community plugin [Obsidian Git](https://github.com/Vinzent03/obsidian-git) runs inside Obsidian
+mobile, so pulling and pushing happen automatically, much like vaultsync on a desktop.
 
-**Android: [MGit](https://github.com/maks/MGit)**
+1. In Obsidian, create an empty vault on the phone. On iOS, store it *On My iPhone*, not in iCloud.
+2. Install and enable **Git** from Community plugins.
+3. In the plugin settings, enter your GitHub username and a fine-grained token (only *Contents:
+   Read and write* on the vault repo) as the password. Set the author name, for example `phone`.
+4. Run the command **Clone an existing remote repo** with `https://github.com/you/vault.git`, clone
+   into the vault root, and restart Obsidian.
+5. Settings: **Pull on startup** on, **Auto commit-and-sync interval** 5 minutes, **Auto pull
+   interval** 5 minutes.
 
-1. Clone `https://github.com/you/vault.git` into shared storage, for example `Documents/Vault`. Use
-   your GitHub username and a fine-grained token as the password.
-2. In Obsidian: **Open folder as vault** → `Documents/Vault`.
-3. Same routine: pull before editing, then stage all, commit and push after.
+**Turn the plugin off on every desktop and on the NAS.** `.obsidian/community-plugins.json` and the
+plugin folder are synced, so after step 2 the plugin also switches on everywhere else and fights
+vaultsync. On each desktop, open the plugin settings and enable **Disable on this device**. That
+setting is per device and isn't synced. The NAS vault isn't opened in Obsidian, so the plugin never
+runs there.
+
+Limits: the plugin uses a JavaScript git implementation. Large vaults or many attachments make it
+slow and memory-hungry, especially on iOS. In that case, use one of the apps below.
+
+### Alternative: a separate git app
+
+**iOS: [Working Copy](https://workingcopy.app)** (pushing requires the paid unlock). Clone the repo,
+then use **Link Repository to Folder** on an empty vault in *On My iPhone → Obsidian*. Routine: pull
+before editing, commit + push after. Shortcuts automations ("When Obsidian opens/closes") can do this
+for you.
+
+**Android: [MGit](https://github.com/maks/MGit).** Clone into shared storage (for example
+`Documents/Vault`) with your username and token, then **Open folder as vault** in Obsidian. Same
+routine: pull before editing, commit and push after.
 
 Mobile clients don't use the `.conflict-…` convention. If a mobile pull reports a merge conflict,
 resolve it in the app or stash your phone's change and re-pull. Pulling before every edit makes

@@ -45,7 +45,8 @@ function saveState(v, patch) {
 
 export function log(v, msg) {
   const line = `${now()} ${msg}`;
-  console.log(line);
+  // The vault name tells lines apart when one process watches several vaults.
+  console.log(`${now()} [${path.basename(v.dir)}] ${msg}`);
   fs.appendFileSync(gitFile(v, 'vaultsync.log'), line + '\n');
 }
 

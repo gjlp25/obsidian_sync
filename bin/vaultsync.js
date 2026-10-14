@@ -10,6 +10,8 @@ if (fs.existsSync(path.join(root, '.env'))) process.loadEnvFile(path.join(root, 
 
 const { VAULT_PATH, GITHUB_TOKEN, DEBOUNCE_SECONDS = '30', PULL_INTERVAL_SECONDS = '300' } = process.env;
 const command = process.argv[2];
+// Several vaults can share one process: VAULT_PATH=/vaults/a:/vaults/b (";" on Windows).
+const vaultPaths = (VAULT_PATH ?? '').split(path.delimiter).filter(Boolean);
 
 const USAGE = `usage: vaultsync <command>
 
@@ -75,20 +77,26 @@ async function main() {
     console.log(USAGE);
     process.exit(command ? 1 : 0);
   }
-  if (!VAULT_PATH) throw new Error(`VAULT_PATH is not set; copy .env.example to ${path.join(root, '.env')}`);
+  if (!vaultPaths.length) throw new Error(`VAULT_PATH is not set; copy .env.example to ${path.join(root, '.env')}`);
 
   if (command === 'init') {
-    fs.mkdirSync(VAULT_PATH, { recursive: true });
-    const added = await init(openVault(VAULT_PATH), path.join(root, 'vault.gitignore'));
-    console.log(added.length ? `added to .gitignore: ${added.join(', ')}` : '.gitignore already up to date');
+    for (const p of vaultPaths) {
+      fs.mkdirSync(p, { recursive: true });
+      const added = await init(openVault(p), path.join(root, 'vault.gitignore'));
+      console.log(`${p}: ` + (added.length ? `added to .gitignore: ${added.join(', ')}` : '.gitignore already up to date'));
+    }
     return;
   }
 
-  const v = openVault(VAULT_PATH, GITHUB_TOKEN);
-  if (!fs.existsSync(path.join(v.dir, '.git'))) throw new Error(`${v.dir} is not a git repo; run "vaultsync init" or clone it first`);
-  if (command === 'watch') return watch(v);
-  if (command === 'sync') return sync(v);
-  return printStatus(v);
+  const vaults = vaultPaths.map((p) => openVault(p, GITHUB_TOKEN));
+  for (const v of vaults) {
+    if (!fs.existsSync(path.join(v.dir, '.git'))) throw new Error(`${v.dir} is not a git repo; run "vaultsync init" or clone it first`);
+  }
+  if (command === 'watch') return vaults.forEach(watch);
+  for (const v of vaults) {
+    if (command === 'sync') await sync(v);
+    else await printStatus(v);
+  }
 }
 
 main().catch((err) => {
