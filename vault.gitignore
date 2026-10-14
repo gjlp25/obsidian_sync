@@ -1,9 +1,14 @@
-# Copied into the vault's .gitignore by `vaultsync init`.
-# Obsidian's per-device UI state (open panes, last file); changes on every click.
+# Files that should NOT be synced. `vaultsync init` adds these lines to each vault's .gitignore.
+# Everything else in the vault, including the rest of .obsidian/ (settings, themes, plugins), is synced.
+
+# Which panes and files are open in Obsidian. Changes on every click and differs per device,
+# so syncing it would make devices overwrite each other's layout all the time.
 .obsidian/workspace*
+
 # Obsidian's local trash folder (Settings > Files & links > Deleted files).
 .trash/
-# OS cruft.
+
+# Hidden system files created by macOS and Windows.
 .DS_Store
 Thumbs.db
 desktop.ini

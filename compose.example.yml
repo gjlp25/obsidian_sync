@@ -1,20 +1,48 @@
-# One container syncs all vaults. Never run a second vaultsync (or any other git process) on the
-# same vault folders. Mount the same host paths the Hermes containers use.
+# vaultsync on the Docker server: one container that syncs all vaults with GitHub.
+#
+# Copy to compose.yml and change the lines marked "CHANGE".
+# Put the token in a file called .env next to compose.yml:  GITHUB_TOKEN=github_pat_...
+#
+# Rule: this container is the only thing that runs git in these folders. Hermes may read and
+# write notes, but never run git there, and never start a second vaultsync on the same folders.
+
 services:
   vaultsync:
     build: .
+    # Start again after a crash or a reboot of the Docker server.
     restart: unless-stopped
-    # Commit messages include the hostname; without this it is a random container id.
+
+    # Shown in every commit message ("vault backup: nas-docker ..."), so you can see which
+    # device made a commit. Without this it would be a random container id.
     hostname: nas-docker
-    # uid:gid that owns the vault files on the NAS share (check with `ls -ln` on the docker host).
+
+    # CHANGE: the user that owns the vault files on the NAS, as "uid:gid".
+    # On the Docker server, run `ls -ln /mnt/nas/obsidian`; the two numbers after the
+    # permissions are the uid and gid. If these are wrong you'll see "Permission denied".
     user: "1026:100"
+
     environment:
+      # CHANGE: the vault folders *inside* the container (right-hand side of `volumes` below),
+      # separated by ":".
       VAULT_PATH: /vaults/Werk:/vaults/Prive:/vaults/Project:/vaults/Archief
+
+      # Taken from the .env file next to compose.yml. Needs "Contents: Read and write" on all
+      # vault repos.
       GITHUB_TOKEN: ${GITHUB_TOKEN}
+
+      # Name and email on the commits this container makes. Anything works; this is just a label.
       GIT_AUTHOR_NAME: vaultsync-nas
       GIT_AUTHOR_EMAIL: vaultsync-nas@localhost
       GIT_COMMITTER_NAME: vaultsync-nas
       GIT_COMMITTER_EMAIL: vaultsync-nas@localhost
+
+      # Optional, defaults shown:
+      # DEBOUNCE_SECONDS: 30         # wait this long after the last change before syncing
+      # PULL_INTERVAL_SECONDS: 300   # sync at least this often
+
+    # CHANGE: one line per vault, "<folder on the Docker server>:<folder in the container>".
+    # Left side: the same NFS paths the Hermes containers mount.
+    # Right side: must match VAULT_PATH above.
     volumes:
       - /mnt/nas/obsidian/Werk:/vaults/Werk
       - /mnt/nas/obsidian/Prive:/vaults/Prive
