@@ -65,7 +65,8 @@ has finished syncing.
 ### 1. Create a GitHub token
 
 1. On GitHub, create one **empty private** repo per vault, for example `you/vault-werk`,
-   `you/vault-prive`. Don't add a README or license; the repo must be empty.
+   `you/vault-prive`. Don't add a README or license; the repo must be empty. (Repo already has
+   notes and history? See [Repo already has history](#repo-already-has-history).)
 2. Create a [fine-grained token](https://github.com/settings/personal-access-tokens):
    - *Repository access:* only the vault repos.
    - *Permissions:* **Contents → Read and write**. Nothing else.
@@ -95,7 +96,11 @@ Put the token in a file called `.env` next to `compose.yml` (Docker Compose read
 GITHUB_TOKEN=github_pat_...
 ```
 
-**b. First sync.** Stop Hermes first, so nothing changes during the first upload.
+Then `chmod 600 .env`. If Docker Compose runs as a different user than the file's owner, use
+`640` with a group that user is in; with `600` Compose can't read it.
+
+**b. First sync.** Stop Hermes first, so nothing changes during the first upload. Make a backup of
+each vault folder first, for example `tar -cf vault-werk-backup.tar -C /mnt/nas/obsidian Werk`.
 
 ```sh
 docker compose build                       # build the image
@@ -126,8 +131,33 @@ Good to know:
 
 - vaultsync notices Hermes' changes within seconds, because Hermes runs on the same Docker server.
   Changes made from elsewhere (for example directly on the NAS) are picked up by the 5-minute round.
-- **Adding a vault later:** add it to `volumes` and `VAULT_PATH`, run `init`, `remote add` and
-  `sync` as above, then `docker compose up -d`.
+- **Adding a vault later:** add it to `volumes` and `VAULT_PATH`. Run `init`, `remote add` and
+  `sync` for only the new vault by overriding `VAULT_PATH`, so the running vaults aren't touched:
+
+  ```sh
+  docker compose run --rm -e VAULT_PATH=/vaults/Nieuw vaultsync init
+  docker compose run --rm --entrypoint git vaultsync -C /vaults/Nieuw remote add origin https://github.com/you/vault-nieuw.git
+  docker compose run --rm -e VAULT_PATH=/vaults/Nieuw vaultsync sync
+  docker compose up -d                       # recreate the container with both vaults
+  ```
+
+  The logs should then show a `watching` line for every vault.
+
+#### Repo already has history
+
+If the GitHub repo already contains (older) notes, don't clone over the NAS folder and don't
+run `sync` straight away: the two histories have nothing in common. Instead, after `init` and
+`remote add`, put the NAS folder on top of the GitHub history *without* touching the files:
+
+```sh
+docker compose run --rm --entrypoint git vaultsync -C /vaults/Werk fetch origin
+docker compose run --rm --entrypoint git vaultsync -C /vaults/Werk reset origin/main   # files stay as they are
+docker compose run --rm vaultsync sync
+```
+
+The first sync then commits the current NAS state as one new commit. The older GitHub content
+is still in the history (`git log`), so nothing is lost. This only works before the vault has
+any commits of its own, so right after `init`.
 
 ### 3. Desktop: switch to a local clone
 
@@ -166,12 +196,18 @@ VAULT_PATH=/Users/you/Vaults/Werk:/Users/you/Vaults/Prive
 GITHUB_TOKEN=github_pat_...
 ```
 
+Use full paths: `$HOME` and `~` are not expanded in `.env`. Run `chmod 600 .env` so only you can
+read the token. Changed `.env` later? Restart the background service (see [Run at login](#run-at-login)).
+
 Then run once:
 
 ```sh
 node bin/vaultsync.js init     # sets a few git options for every vault
 node bin/vaultsync.js sync     # confirms that upload works
+node bin/vaultsync.js status   # should show ahead 0, behind 0, conflicts none
 ```
+
+`last push: never` right after cloning is normal: there was nothing new to upload yet.
 
 **d. Open in Obsidian:** **Open folder as vault** → `~/Vaults/Werk`, and so on.
 
@@ -230,7 +266,8 @@ conflicts    1 outstanding:
   Projects/plan.conflict-2026-10-13.md
 ```
 
-*ahead* = snapshots not yet uploaded, *behind* = snapshots on GitHub not yet downloaded.
+*ahead* = snapshots not yet uploaded, *behind* = snapshots on GitHub not yet downloaded. A healthy
+vault shows `ahead 0, behind 0`, `uncommitted 0` and `conflicts none`.
 
 ### Settings
 
@@ -308,14 +345,62 @@ Create `~/Library/LaunchAgents/com.you.vaultsync.plist`:
   </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
-  <key>StandardOutPath</key><string>/tmp/vaultsync.log</string>
-  <key>StandardErrorPath</key><string>/tmp/vaultsync.log</string>
+  <key>StandardOutPath</key><string>/Users/you/Library/Logs/vaultsync.log</string>
+  <key>StandardErrorPath</key><string>/Users/you/Library/Logs/vaultsync.log</string>
 </dict></plist>
 ```
 
-Then: `launchctl load ~/Library/LaunchAgents/com.you.vaultsync.plist`.
+Then load it (no `sudo`: this is a per-user LaunchAgent):
 
-- Use full paths. `which node` shows where node is (`/opt/homebrew/bin/node` on Apple Silicon).
+```sh
+PLIST="$HOME/Library/LaunchAgents/com.you.vaultsync.plist"
+DOMAIN="gui/$(id -u)"
+LABEL=$(/usr/libexec/PlistBuddy -c 'Print :Label' "$PLIST")
+
+chown "$(id -un)":staff "$PLIST"
+chmod 644 "$PLIST"
+
+launchctl enable "$DOMAIN/$LABEL"
+launchctl bootout "$DOMAIN/$LABEL" 2>/dev/null || true
+launchctl bootstrap "$DOMAIN" "$PLIST"
+launchctl kickstart -kp "$DOMAIN/$LABEL"
+```
+
+Run the same commands again after editing the plist. Day to day:
+
+```sh
+launchctl print "gui/$(id -u)/com.you.vaultsync"        # should show: state = running
+launchctl kickstart -k "gui/$(id -u)/com.you.vaultsync" # restart, e.g. after changing .env
+tail -n 100 ~/Library/Logs/vaultsync.log                # one "watching" line per vault
+```
+
+`com.you.vaultsync` is just the example name. If you picked another `Label`, use that one
+everywhere (the `LABEL=` line above reads it from the plist); otherwise launchctl says the
+service doesn't exist.
+
+- Use full paths. `which node` shows where node is: `/opt/homebrew/bin/node` on Apple Silicon,
+  `/usr/local/bin/node` on Intel (Homebrew); other installs (nvm, fnm, `~/.local/bin`, …) differ.
+  A symlink is fine, as long as it points to an existing node.
+- The plist must be owned by you and not writable by group or others, or launchd refuses it.
+- `launchctl load`/`unload` are deprecated; use `bootstrap`/`bootout`.
+
+**`Bootstrap failed: 5: Input/output error`?** `plutil -lint` only checks syntax; error 5
+usually means the service was already (partly) loaded, is disabled, has wrong file permissions,
+or a path in `ProgramArguments` doesn't exist. The commands above handle the first three. For
+the paths:
+
+```sh
+ls -l "$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments:0' "$PLIST")" \
+      "$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments:1' "$PLIST")"
+```
+
+Both files must exist. If it still fails, launchd's log shows the real reason:
+
+```sh
+/usr/bin/log show --last 10m --style compact \
+  --predicate 'process == "launchd" AND eventMessage CONTAINS[c] "com.you.vaultsync"'
+```
+
 - macOS blocks background programs from `~/Documents`, `~/Desktop` and iCloud Drive. Keep the
   vaults and this tool elsewhere (for example `~/Vaults`), or give `node` Full Disk Access in
   **System Settings → Privacy & Security**.
@@ -357,6 +442,8 @@ WantedBy=default.target
 | `... is not a git repo`                       | Run `init` first, or clone the vault (desktop).                         |
 | `Permission denied` in Docker                 | `user:` in `compose.yml` doesn't match the owner of the NAS folders.    |
 | Push fails with 403 / authentication          | Token expired or lacks *Contents: Read and write* on that repo.        |
+| `git ls-remote`/`git fetch` by hand asks for a username | Normal: the token is only given to git while vaultsync runs. Test with `vaultsync sync` and `status` instead. |
+| macOS: `Bootstrap failed: 5: Input/output error` | See [macOS](#macos).                                                |
 | Every note shows as changed on Windows        | Clone was made without `-c core.autocrlf=false`. Re-clone with it.      |
 | Changes on the NAS appear only after minutes  | Normal for edits not made via the Docker server; the 5-minute round picks them up. |
 | Vault was already a git repo with `.obsidian/workspace*.json` in it | Run once: `git rm --cached ".obsidian/workspace*.json"` in the vault. |
